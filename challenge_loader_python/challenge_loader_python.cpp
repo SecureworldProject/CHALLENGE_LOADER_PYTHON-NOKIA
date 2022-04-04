@@ -6,38 +6,72 @@
 /////  FILE INCLUDES  /////
 #include "pch.h"
 #include "context_challenge.h"
-
+#include <Python.h>
+#include "json.h"
 
 /////  DEFINITIONS  /////
 
 
 /////  GLOBAL VARIABLES  /////
-char* file_modulepy = NULL;
-char* param1 = NULL;
-int param2 = 0;
-
+char* module_python = NULL;
+PyObject* pDictArgs;
+PyObject* pName, *pModule, *pFuncInit, *pFuncExec;
 
 /////  FUNCTION DEFINITIONS  /////
 void getChallengeParameters();
-
+int importModulePython();
 
 /////  FUNCTION IMPLEMENTATIONS  /////
 int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challenge_param) {
 	int result = 0;
 
+	
 	// It is mandatory to fill these global variables
 	group = group_param;
 	challenge = challenge_param;
-	if (group == NULL || challenge == NULL)
+	if (group == NULL || challenge == NULL) {
+		printf("\033[33mGroup or challenge are NULL \n \033[0m");
 		return -1;
+	}
+	printf("\033[33mInitializing (%ws) \n \033[0m", challenge->file_name);
 
 	// Process challenge parameters
 	getChallengeParameters();
 
-	printf("Initializing (%ws)\n", challenge->file_name);
+
+	//importamos el modulo
+	result= importModulePython();
+	if (result != 0) {
+		if (Py_FinalizeEx() < 0) {
+			return 120;
+		}
+		return result;//DECREF se hace dentro de la funcion import
+	}
+	//llamamos al init de python
+	PyObject *pValue = PyObject_CallOneArg(pFuncInit, pDictArgs);
+
+	//comprobamos el resultado
+	result = PyLong_Check( pValue);
+	if (result == 0) {
+		Py_XDECREF(pFuncInit);
+		Py_DECREF(pModule);
+		if (Py_FinalizeEx() < 0) {
+			return 120;
+		}
+		return -1;
+	}
+	result = PyLong_AsLong(pValue);
+	if (result != 0) {
+		Py_XDECREF(pFuncInit);
+		Py_DECREF(pModule);
+		if (Py_FinalizeEx() < 0) {
+			return 120;
+		}
+		return result;
+	}
 
 	// It is optional to execute the challenge here
-	result = executeChallenge();
+	// result = executeChallenge(); do it from python init, if you want
 
 	// It is optional to launch a thread to refresh the key here, but it is recommended
 	if (result == 0) {
@@ -58,16 +92,82 @@ int executeChallenge() {
 	if (group == NULL || challenge == NULL)	return -1;
 
 
-	//Los pyobjects necesrios para cargar la funcion
-	PyObject* pName, *pModule, *pFunc;
-	PyObject* pArgs, *pValue;
-	PyObject* pDictArgs;
+	
 	byte* result;
 
-	//init python and import modules
+	PyObject *pValue = PyObject_CallNoArgs(pFuncExec);
+	int res = PyTuple_Check(pValue);
+	if (res != 0) return -1;
+	PyObject *pValuekey=PyTuple_GetItem(pValue, 0);
+	PyObject *pValuekeysize = PyTuple_GetItem(pValue, 1);
+
+	//TO DO: robustecer esto para que la tupla sepamos que mide 2 y que sus tipos estan bien
+
+	byte* key = (byte*)PyBytes_AsString(pValuekey);
+	int size_of_key = (int) PyLong_AsLong(pValuekeysize);
+
+	   
+	EnterCriticalSection(&(group->subkey->critical_section));
+	if ((group->subkey)->data != NULL) {
+		free((group->subkey)->data);
+	}
+		
+	group->subkey->data = key;
+	group->subkey->expires = time(NULL) + validity_time;
+	group->subkey->size = size_of_key;
+	LeaveCriticalSection(&(group->subkey->critical_section));
+
+	
+
+	return 0;   // Always 0 means OK.
+
+}
+
+void getChallengeParameters() {
+	printf("Getting challenge parameters\n");
+
+	//init python
 	Py_Initialize();
-	// Preparar el nombre del modulo python y importarlo
-	pName = PyUnicode_DecodeFSDefault(file);
+	pDictArgs = PyDict_New(); // Ese elemento de la tupla sera un diccionario
+
+	
+	json_value* value = challenge->properties;
+	for (int i = 0; i < value->u.object.length; i++) {
+		if (strcmp(value->u.object.values[i].name, "module_python") == 0) module_python = value->u.object.values[i].value->u.string.ptr;
+
+		if (strcmp(value->u.object.values[i].name, "validity_time") == 0) {
+			validity_time = (int)(value->u.object.values[i].value->u.integer);
+		}
+		else if (strcmp(value->u.object.values[i].name, "refresh_time") == 0) {
+			refresh_time = (int)(value->u.object.values[i].value->u.integer);
+		}
+		else {
+			//parametros especificos del challenge a priori desconocidos
+			switch (value->u.object.values[i].value->type) {
+			  case  json_integer:
+				PyDict_SetItemString(pDictArgs, value->u.object.values[i].name, PyLong_FromLong((long)value->u.object.values[i].value->u.integer));
+				break;
+
+			  case json_string:
+				char *param = (char*)malloc(value->u.object.values[i].value->u.string.length * sizeof(char) + 1);
+				strcpy_s(param, value->u.object.values[i].value->u.string.length * sizeof(char) + 1, value->u.object.values[i].value->u.string.ptr);
+				PyDict_SetItemString(pDictArgs, value->u.object.values[i].name, PyUnicode_FromString(param));
+
+				break;
+					
+
+			}
+
+		}
+		
+
+	}
+}
+
+int importModulePython() {
+	
+
+	pName = PyUnicode_DecodeFSDefault(module_python);
 	pModule = PyImport_Import(pName);
 	Py_DECREF(pName);
 	if (pModule == NULL) {
@@ -78,101 +178,27 @@ int executeChallenge() {
 	}
 	printf("Initialized module\n");
 
-	//check the python function
-	pFunc = PyObject_GetAttrString(pModule, "execute"); // pFunc is a new reference, the attribute(function) execute from module pModule
-	if (!(pFunc && PyCallable_Check(pFunc))) { //PyCallable_Check check if its a function (its callable)
+
+	pFuncInit = PyObject_GetAttrString(pModule, "init"); // pFunc is a new reference, the attribute(function) execute from module pModule
+	if (!(pFuncInit && PyCallable_Check(pFuncInit))) { //PyCallable_Check check if its a function (its callable)
 		if (PyErr_Occurred())
 			PyErr_Print();
 		fprintf(stderr, "Dll message: Cannot find function execute\n");
-		Py_DECREF(pFunc);
+		Py_DECREF(pFuncInit);
 		return 1;
 	}
 	printf("Function is callable\n");
 
-	//get the arguments and call the function
-	num_main_fields = num_main_fields - 3; //Los campos del json menos el modulo, y los tiempos
-	pArgs = PyTuple_New(1); // El argumento sera una tupla de un elemento
-	pDictArgs = PyDict_New(); // Ese elemento de la tupla sera un diccionario
-	for (int i = 0; i < num_main_fields; i++) { //Rellenamos el diccionario con la estructura parameters que obtuvimos en el init
-		//TODO: check type of parameter by name
-		PyDict_SetItemString(pDictArgs, parameters[i]->name, PyUnicode_FromString((char*)parameters[i]->value));
-	}
-	PyTuple_SetItem(pArgs, 0, pDictArgs); //Asignamos el diccionario como parametro 0 de la tupla que se llama pArgs
-	pValue = PyObject_CallObject(pFunc, pArgs); // pValue es lo que devuelve la invocacion de la funcion
-	Py_DECREF(pArgs);
-	if (pValue != NULL) {
-		result = (byte*)PyBytes_AsString(pValue);
-		/*TODO: Ahora mismo la funcion solo devuelve una cadena de bytes, esto debe cambiar y devolver una tupla con los bytes y el tamaño de los
-		mismos. Entonces hara que tratar pvalue como una tupla y hacer getitem en dos variables que pueden ser result_bytes y result_size,
-		con ese size se hace malloc de group->subkey->data, en lugar de haberlo hecho "desde fuera" (en el securemirror)*/
-
-		memcpy(group->subkey->data, result, 4); // Este 4 lo he puesto a fuego, debería ser "result_size", es decir la variable que devuelve python
-		printf("Despues del memcpy    ");
-		PRINT_HEX(group->subkey->data, 4);
-		Py_DECREF(pValue);
-
-
-		EnterCriticalSection(&(group->subkey->critical_section));
-		if ((group->subkey)->data != NULL) {
-			free((group->subkey)->data);
-		}
-		group->subkey->data = key;
-		group->subkey->expires = time(NULL) + validity_time;
-		group->subkey->size = size_of_key;
-		LeaveCriticalSection(&(group->subkey->critical_section));
-
-	}
-	else {
-		Py_DECREF(pFunc);
-		Py_DECREF(pModule);
-		PyErr_Print();
-		fprintf(stderr, "Call failed\n");
+	pFuncExec = PyObject_GetAttrString(pModule, "executeChallenge"); // pFunc is a new reference, the attribute(function) execute from module pModule
+	if (!(pFuncExec && PyCallable_Check(pFuncExec))) { //PyCallable_Check check if its a function (its callable)
+		if (PyErr_Occurred())
+			PyErr_Print();
+		fprintf(stderr, "Dll message: Cannot find function executeChallenge\n");
+		Py_DECREF(pFuncExec);
 		return 1;
 	}
+	printf("Function is callable\n");
 
-	Py_XDECREF(pFunc);
-	Py_DECREF(pModule);
 
-	if (Py_FinalizeEx() < 0) {
-		return 120;
-	}
-
-	//group->subkey->expires = time(NULL) + VALID_TIME;
-	//group->subkey->data = VALID_KEY;
-
-	return 0;   // Always 0 means OK.
-
+	return 0;
 }
-
-void getChallengeParameters() {
-	printf("Getting challenge parameters\n");
-	json_value* value = challenge->properties;
-	for (int i = 0; i < value->u.object.length; i++) {
-		if (strcmp(value->u.object.values[i].name, "PyFile") == 0) file_modulepy = value->u.object.values[i].value->u.string.ptr;
-
-		if (strcmp(value->u.object.values[i].name, "validity_time") == 0) {
-			validity_time = (int)(value->u.object.values[i].value->u.integer);
-		}
-		else if (strcmp(value->u.object.values[i].name, "refresh_time") == 0) {
-			refresh_time = (int)(value->u.object.values[i].value->u.integer);
-		}
-		/*
-		else if (strcmp(value->u.object.values[i].name, "param1") == 0) {
-			param1 = (char*)malloc(value->u.object.values[i].value->u.string.length * sizeof(char) + 1);
-			printf("Tamaño = %d\n", value->u.object.values[i].value->u.string.length * sizeof(char) + 1);
-			strcpy_s(param1, value->u.object.values[i].value->u.string.length * sizeof(char) + 1, value->u.object.values[i].value->u.string.ptr);
-		}
-		else if (strcmp(value->u.object.values[i].name, "param2") == 0) {
-			param2 = (int)(value->u.object.values[i].value->u.integer);
-		}
-		*/
-		else fprintf(stderr, "WARNING: the field '%s' included in the json configuration file is not registered and will not be processed.\n", value->u.object.values[i].name);
-
-		//TODO: meter los parametros especificos (param1 y param2) en un diccionario python
-		//la forma de hacerlo esta puesta en el execute. hay que quitarlo de alli y traerlo aqui
-		// NO PORQUE SIN INICIALIZAR PYTHON NO SE PUEDE CREAR EL DICCIONARIO
-		//SE INICIALIZA EN EL EXECUTE
-
-	}
-}
-

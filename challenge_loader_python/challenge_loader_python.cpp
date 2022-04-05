@@ -37,7 +37,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 
 	// Process challenge parameters
 	getChallengeParameters();
-
+	printf("\033[33m get parameters ok\n \033[0m");
 
 	//importamos el modulo
 	result= importModulePython();
@@ -61,7 +61,9 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 		return -1;
 	}
 	result = PyLong_AsLong(pValue);
+	
 	if (result != 0) {
+		printf("\033[33m error: result no es cero en init de python! \n\033[0m");
 		Py_XDECREF(pFuncInit);
 		Py_DECREF(pModule);
 		if (Py_FinalizeEx() < 0) {
@@ -69,13 +71,13 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 		}
 		return result;
 	}
-
+	printf("\033[33m result  es cero en init python: ok \n\033[0m");
 	// It is optional to execute the challenge here
 	// result = executeChallenge(); do it from python init, if you want
 
 	// It is optional to launch a thread to refresh the key here, but it is recommended
 	if (result == 0) {
-		periodicExecution(periodic_execution);
+		launchPeriodicExecution();
 	}
 
 	return result;
@@ -88,7 +90,7 @@ int executeChallenge() {
 
 	//TODO leer solo los parameros especificos
 
-	printf("Execute (%ws)\n", challenge->file_name);
+	printf("--- Execute (%ws)\n", challenge->file_name);
 	if (group == NULL || challenge == NULL)	return -1;
 
 
@@ -97,7 +99,10 @@ int executeChallenge() {
 
 	PyObject *pValue = PyObject_CallNoArgs(pFuncExec);
 	int res = PyTuple_Check(pValue);
-	if (res != 0) return -1;
+	if (res == 0) {
+		printf("--- Result is not a tuple! \n");
+		return -1;
+	}
 	PyObject *pValuekey=PyTuple_GetItem(pValue, 0);
 	PyObject *pValuekeysize = PyTuple_GetItem(pValue, 1);
 
@@ -108,14 +113,18 @@ int executeChallenge() {
 
 	   
 	EnterCriticalSection(&(group->subkey->critical_section));
+	printf(" --- enter critical section \n");
+	/*
 	if ((group->subkey)->data != NULL) {
+		printf(" --- free memory \n");
 		free((group->subkey)->data);
-	}
+	}*/
 		
 	group->subkey->data = key;
 	group->subkey->expires = time(NULL) + validity_time;
 	group->subkey->size = size_of_key;
 	LeaveCriticalSection(&(group->subkey->critical_section));
+	printf(" --- exited from critical section \n");
 
 	
 
@@ -124,7 +133,7 @@ int executeChallenge() {
 }
 
 void getChallengeParameters() {
-	printf("Getting challenge parameters\n");
+	printf("--- Getting challenge parameters\n");
 
 	//init python
 	Py_Initialize();
@@ -172,32 +181,32 @@ int importModulePython() {
 	Py_DECREF(pName);
 	if (pModule == NULL) {
 		PyErr_Print();
-		fprintf(stderr, "Dll message: Failed to load python module\n");
-		Py_DECREF(pModule);
+		fprintf(stderr, "--- Dll message: Failed to load python module\n");
+		//Py_DECREF(pModule);
 		return 1;
 	}
-	printf("Initialized module\n");
+	printf("--- Initialized module\n");
 
 
 	pFuncInit = PyObject_GetAttrString(pModule, "init"); // pFunc is a new reference, the attribute(function) execute from module pModule
 	if (!(pFuncInit && PyCallable_Check(pFuncInit))) { //PyCallable_Check check if its a function (its callable)
 		if (PyErr_Occurred())
 			PyErr_Print();
-		fprintf(stderr, "Dll message: Cannot find function execute\n");
-		Py_DECREF(pFuncInit);
+		fprintf(stderr, "--- Dll message: Cannot find function execute\n");
+		//Py_DECREF(pFuncInit);
 		return 1;
 	}
-	printf("Function is callable\n");
+	printf("--- Function init is callable\n");
 
 	pFuncExec = PyObject_GetAttrString(pModule, "executeChallenge"); // pFunc is a new reference, the attribute(function) execute from module pModule
 	if (!(pFuncExec && PyCallable_Check(pFuncExec))) { //PyCallable_Check check if its a function (its callable)
 		if (PyErr_Occurred())
 			PyErr_Print();
-		fprintf(stderr, "Dll message: Cannot find function executeChallenge\n");
-		Py_DECREF(pFuncExec);
+		fprintf(stderr, "--- Dll message: Cannot find function executeChallenge\n");
+		//Py_DECREF(pFuncExec);
 		return 1;
 	}
-	printf("Function is callable\n");
+	printf("--- Function executeChallenge is callable\n");
 
 
 	return 0;

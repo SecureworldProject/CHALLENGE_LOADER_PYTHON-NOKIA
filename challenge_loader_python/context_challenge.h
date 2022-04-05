@@ -18,7 +18,7 @@ struct ChallengeEquivalenceGroup* group = NULL;
 struct Challenge* challenge = NULL;
 bool periodic_execution = true;
 int validity_time = 0;
-int refresh_time = 0;
+int refresh_time = 1000000;
 HANDLE h_thread = INVALID_HANDLE_VALUE;
 
 
@@ -26,7 +26,8 @@ HANDLE h_thread = INVALID_HANDLE_VALUE;
 
 extern "C" _declspec(dllexport) int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challenge_param);
 extern "C" _declspec(dllexport) int executeChallenge();
-extern "C" _declspec(dllexport)  void periodicExecution(bool active_param);
+extern "C" _declspec(dllexport)  void setPeriodicExecution(bool active_param);
+void launchPeriodicExecution();
 void refreshSubkey(LPVOID th_param);
 
 
@@ -54,16 +55,23 @@ struct KeyData {
 };
 
 
-void periodicExecution(bool active_param) {
+void setPeriodicExecution(bool active_param) {
+	printf("--- periodic exec: %d \n", active_param);
 	periodic_execution = active_param;
-	if (active_param) {
+	
+}
+
+void launchPeriodicExecution() {
+	if (periodic_execution) {
 		h_thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)refreshSubkey, NULL, 0, NULL);
 	}
 }
 
 void refreshSubkey(LPVOID th_param) {
 	Sleep(refresh_time*1000);
+	
 	while (periodic_execution) {
+		printf("--- soy el ch y voy a lanzar exec \n");
 		executeChallenge();
 		Sleep(refresh_time*1000);      // Sleep first due to execute function already launched by init()
 	}

@@ -35,6 +35,9 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	}
 	printf("\033[33mInitializing (%ws) \n \033[0m", challenge->file_name);
 
+	//init python shell
+	Py_Initialize();
+
 	// Process challenge parameters
 	getChallengeParameters();
 	printf("\033[33m get parameters ok\n \033[0m");
@@ -77,6 +80,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 
 	// It is optional to launch a thread to refresh the key here, but it is recommended
 	if (result == 0) {
+		//this function is located at context_challenge.h
 		launchPeriodicExecution();
 	}
 
@@ -101,6 +105,7 @@ int executeChallenge() {
 	int res = PyTuple_Check(pValue);
 	if (res == 0) {
 		printf("--- Result is not a tuple! \n");
+		periodic_execution = false;//con esto ya basta para que no se lance mas.
 		return -1;
 	}
 	PyObject *pValuekey=PyTuple_GetItem(pValue, 0);
@@ -108,25 +113,36 @@ int executeChallenge() {
 
 	//TO DO: robustecer esto para que la tupla sepamos que mide 2 y que sus tipos estan bien
 
-	byte* key = (byte*)PyBytes_AsString(pValuekey);
+	byte* key_data = (byte*)PyBytes_AsString(pValuekey);
 	int size_of_key = (int) PyLong_AsLong(pValuekeysize);
 
-	   
+	if (size_of_key == 0) {
+		// esto indica que el challenge no se ha podido ejecutar
+		printf(" key len zero: NOT possible to execute challenge: %s\n", module_python);
+		printf(" Stop thread %s and securemirror go for next equivalent challenge\n", module_python);
+		periodic_execution = false;//con esto ya basta para que no se lance mas.
+		return - 1; //este -1 no se procesa normalmente a menos que lo invoque directamente securemirror (en caso de clave expirada)
+	}
+
+	// BEGIN CRITICAL
+	// --------------
 	EnterCriticalSection(&(group->subkey->critical_section));
 	printf(" --- enter critical section \n");
-	/*
+	/* esto no sabemos si debemos descomentarlo o no. pendiente experimentar
 	if ((group->subkey)->data != NULL) {
 		printf(" --- free memory \n");
 		free((group->subkey)->data);
 	}*/
 		
-	group->subkey->data = key;
+	group->subkey->data = key_data;
 	group->subkey->expires = time(NULL) + validity_time;
 	group->subkey->size = size_of_key;
 	LeaveCriticalSection(&(group->subkey->critical_section));
+	// LEAVE CRITICAL
+	// --------------
 	printf(" --- exited from critical section \n");
 
-	
+	periodic_execution = true; //como el hilo sigue en sleep, basta con este true para que siga vivo
 
 	return 0;   // Always 0 means OK.
 
@@ -135,8 +151,7 @@ int executeChallenge() {
 void getChallengeParameters() {
 	printf("--- Getting challenge parameters\n");
 
-	//init python
-	Py_Initialize();
+	
 	pDictArgs = PyDict_New(); // Ese elemento de la tupla sera un diccionario
 
 	

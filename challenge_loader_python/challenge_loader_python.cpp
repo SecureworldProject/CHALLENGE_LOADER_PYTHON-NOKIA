@@ -8,8 +8,15 @@
 #include "context_challenge.h"
 #include <Python.h>
 #include "json.h"
+//#include <stdio.h>
+
+
+
+
 
 /////  DEFINITIONS  /////
+
+
 
 
 /////  GLOBAL VARIABLES  /////
@@ -17,44 +24,49 @@ char* module_python = NULL;
 PyObject* pDictArgs;
 PyObject* pName, *pModule, *pFuncInit, *pFuncExec;
 
+
+
+
 /////  FUNCTION DEFINITIONS  /////
 void getChallengeParameters();
 int importModulePython();
+
+
+
 
 /////  FUNCTION IMPLEMENTATIONS  /////
 int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challenge_param) {
 	int result = 0;
 
-	
 	// It is mandatory to fill these global variables
 	group = group_param;
 	challenge = challenge_param;
 	if (group == NULL || challenge == NULL) {
-		printf("\033[33mGroup or challenge are NULL \n \033[0m");
+		printf("--- ERROR: group or challenge are NULL \n");
 		return -1;
 	}
-	printf("\033[33mInitializing (%ws) \n \033[0m", challenge->file_name);
+	printf("--- Proceding to initialize challenge '%ws'\n", challenge->file_name);
 
-	//init python shell
+	// Init python shell
 	Py_Initialize();
 
 	// Process challenge parameters
 	getChallengeParameters();
-	printf("\033[33m get parameters ok\n \033[0m");
 
-	//importamos el modulo
-	result= importModulePython();
+	// Import the specified python module
+	result = importModulePython();
 	if (result != 0) {
 		if (Py_FinalizeEx() < 0) {
 			return 120;
 		}
 		return result;//DECREF se hace dentro de la funcion import
 	}
-	//llamamos al init de python
+
+	// Call python challenge init()
 	PyObject *pValue = PyObject_CallOneArg(pFuncInit, pDictArgs);
 
-	//comprobamos el resultado
-	result = PyLong_Check( pValue);
+	// Check the result
+	result = PyLong_Check(pValue);
 	if (result == 0) {
 		Py_XDECREF(pFuncInit);
 		Py_DECREF(pModule);
@@ -66,7 +78,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	result = PyLong_AsLong(pValue);
 	
 	if (result != 0) {
-		printf("\033[33m error: result no es cero en init de python! \n\033[0m");
+		printf("--- ERROR: result IS NOT zero in python challenge init()!\n");
 		Py_XDECREF(pFuncInit);
 		Py_DECREF(pModule);
 		if (Py_FinalizeEx() < 0) {
@@ -74,87 +86,81 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 		}
 		return result;
 	}
-	printf("\033[33m result  es cero en init python: ok \n\033[0m");
-	// It is optional to execute the challenge here
-	// result = executeChallenge(); do it from python init, if you want
+	printf("--- result IS zero in python challenge init(): OK\n");
+	// It is optional to execute the challenge here. As long as this is a wrapper for many python challenges, better not to call it here.
+	// result = executeChallenge(); // You can do it from python init if you want
 
 	// It is optional to launch a thread to refresh the key here, but it is recommended
 	if (result == 0) {
-		//this function is located at context_challenge.h
-		launchPeriodicExecution();
+		launchPeriodicExecution();  // This function is located at context_challenge.h
 	}
 
 	return result;
-
-	
-
 }
 
 int executeChallenge() {
-
 	//TODO leer solo los parameros especificos
 
 	printf("--- Execute (%ws)\n", challenge->file_name);
 	if (group == NULL || challenge == NULL)	return -1;
 
-
-	
 	byte* result;
 
 	PyObject *pValue = PyObject_CallNoArgs(pFuncExec);
 	int res = PyTuple_Check(pValue);
 	if (res == 0) {
 		printf("--- Result is not a tuple! \n");
-		periodic_execution = false;//con esto ya basta para que no se lance mas.
+		periodic_execution = false; // This is enough to ensure that the thread dies and does not execute any other time.
 		return -1;
 	}
-	PyObject *pValuekey=PyTuple_GetItem(pValue, 0);
+	PyObject *pValuekey = PyTuple_GetItem(pValue, 0);
 	PyObject *pValuekeysize = PyTuple_GetItem(pValue, 1);
 
 	//TO DO: robustecer esto para que la tupla sepamos que mide 2 y que sus tipos estan bien
 
-	byte* key_data = (byte*)PyBytes_AsString(pValuekey);
 	int size_of_key = (int) PyLong_AsLong(pValuekeysize);
-
 	if (size_of_key == 0) {
-		// esto indica que el challenge no se ha podido ejecutar
-		printf(" key len zero: NOT possible to execute challenge: %s\n", module_python);
-		printf(" Stop thread %s and securemirror go for next equivalent challenge\n", module_python);
-		periodic_execution = false;//con esto ya basta para que no se lance mas.
-		return - 1; //este -1 no se procesa normalmente a menos que lo invoque directamente securemirror (en caso de clave expirada)
+		// This indicates that the challenge could not execute correctly
+		printf("--- size_of_key is 0: it was NOT possible to execute the challenge '%s'\n", module_python);
+		printf("--- Stopping thread %s. Securemirror will automatically try to launch next equivalent challenge\n", module_python);
+		periodic_execution = false; // This is enough to ensure that the thread dies and does not execute any other time.
+		return - 1; // This -1 is not processed unless it is directly invocated from securemirror (which happens only when the key expired)
 	}
+	byte* key_data = (byte*)PyBytes_AsString(pValuekey);
+	printf("--- After execute: key_data[0] = %d\n", key_data[0]);
+
 
 	// BEGIN CRITICAL
 	// --------------
 	EnterCriticalSection(&(group->subkey->critical_section));
-	printf(" --- enter critical section \n");
-	/* esto no sabemos si debemos descomentarlo o no. pendiente experimentar
+	printf(" --- entered in critical section\n");
+	/* TO DO: esto no sabemos si debemos descomentarlo o no. pendiente experimentar
 	if ((group->subkey)->data != NULL) {
 		printf(" --- free memory \n");
 		free((group->subkey)->data);
 	}*/
-		
+
 	group->subkey->data = key_data;
 	group->subkey->expires = time(NULL) + validity_time;
 	group->subkey->size = size_of_key;
 	LeaveCriticalSection(&(group->subkey->critical_section));
 	// LEAVE CRITICAL
 	// --------------
-	printf(" --- exited from critical section \n");
+	printf(" --- exited from critical section\n");
 
-	periodic_execution = true; //como el hilo sigue en sleep, basta con este true para que siga vivo
+	periodic_execution = true; // As long as the thread is still sleeping, it is enough to set this to true to keep it alive
 
 	return 0;   // Always 0 means OK.
 
 }
 
 void getChallengeParameters() {
-	printf("--- Getting challenge parameters\n");
+	printf("--- Getting challenge parameters...\n");
 
-	
-	pDictArgs = PyDict_New(); // Ese elemento de la tupla sera un diccionario
+	// General parameters are stored in their own global variables
+	// Create a python dict to contain the challenge-specific parameters
+	pDictArgs = PyDict_New();
 
-	
 	json_value* value = challenge->properties;
 	for (int i = 0; i < value->u.object.length; i++) {
 		if (strcmp(value->u.object.values[i].name, "module_python") == 0) module_python = value->u.object.values[i].value->u.string.ptr;
@@ -166,7 +172,7 @@ void getChallengeParameters() {
 			refresh_time = (int)(value->u.object.values[i].value->u.integer);
 		}
 		else {
-			//parametros especificos del challenge a priori desconocidos
+			// Challenge-specific parameters (supposedly unknown)
 			switch (value->u.object.values[i].value->type) {
 			  case  json_integer:
 				PyDict_SetItemString(pDictArgs, value->u.object.values[i].name, PyLong_FromLong((long)value->u.object.values[i].value->u.integer));
@@ -178,14 +184,10 @@ void getChallengeParameters() {
 				PyDict_SetItemString(pDictArgs, value->u.object.values[i].name, PyUnicode_FromString(param));
 
 				break;
-					
-
 			}
-
 		}
-		
-
 	}
+	printf("--- Challenge parameters obtained\n");
 }
 
 int importModulePython() {

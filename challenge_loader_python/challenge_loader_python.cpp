@@ -42,7 +42,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	group = group_param;
 	challenge = challenge_param;
 	if (group == NULL || challenge == NULL) {
-		printf("--- ERROR: group or challenge are NULL \n");
+		printf("--- ERROR: group or challenge are NULL\n");
 		return -1;
 	}
 	printf("--- Proceding to initialize challenge '%ws'\n", challenge->file_name);
@@ -78,7 +78,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	result = PyLong_AsLong(pValue);
 	
 	if (result != 0) {
-		printf("--- ERROR: result IS NOT zero in python challenge init()!\n");
+		printf("--- ERROR: result is NOT zero in python challenge init()!\n");
 		Py_XDECREF(pFuncInit);
 		Py_DECREF(pModule);
 		if (Py_FinalizeEx() < 0) {
@@ -86,7 +86,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 		}
 		return result;
 	}
-	printf("--- result IS zero in python challenge init(): OK\n");
+	printf("--- Result IS zero in python challenge init(): OK\n");
 	// It is optional to execute the challenge here. As long as this is a wrapper for many python challenges, better not to call it here.
 	// result = executeChallenge(); // You can do it from python init if you want
 
@@ -101,15 +101,18 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 int executeChallenge() {
 	//TODO leer solo los parameros especificos
 
-	printf("--- Execute (%ws)\n", challenge->file_name);
-	if (group == NULL || challenge == NULL)	return -1;
+	if (group == NULL || challenge == NULL) {
+		printf("--- ERROR: group or challenge are NULL\n");
+		return -1;
+	}
+	printf("--- Execute (%ws with module %s)\n", challenge->file_name, module_python);
 
 	byte* result;
 
 	PyObject *pValue = PyObject_CallNoArgs(pFuncExec);
 	int res = PyTuple_Check(pValue);
 	if (res == 0) {
-		printf("--- Result is not a tuple! \n");
+		printf("--- ERROR: result is not a tuple! \n");
 		periodic_execution = false; // This is enough to ensure that the thread dies and does not execute any other time.
 		return -1;
 	}
@@ -121,7 +124,7 @@ int executeChallenge() {
 	int size_of_key = (int) PyLong_AsLong(pValuekeysize);
 	if (size_of_key == 0) {
 		// This indicates that the challenge could not execute correctly
-		printf("--- size_of_key is 0: it was NOT possible to execute the challenge '%s'\n", module_python);
+		printf("--- ERROR: size_of_key is 0. It was NOT possible to execute the challenge '%s'\n", module_python);
 		printf("--- Stopping thread %s. Securemirror will automatically try to launch next equivalent challenge\n", module_python);
 		periodic_execution = false; // This is enough to ensure that the thread dies and does not execute any other time.
 		return - 1; // This -1 is not processed unless it is directly invocated from securemirror (which happens only when the key expired)
@@ -133,7 +136,7 @@ int executeChallenge() {
 	// BEGIN CRITICAL
 	// --------------
 	EnterCriticalSection(&(group->subkey->critical_section));
-	printf(" --- entered in critical section\n");
+	printf(" --- Entered in critical section\n");
 	/* TO DO: esto no sabemos si debemos descomentarlo o no. pendiente experimentar
 	if ((group->subkey)->data != NULL) {
 		printf(" --- free memory \n");
@@ -146,7 +149,7 @@ int executeChallenge() {
 	LeaveCriticalSection(&(group->subkey->critical_section));
 	// LEAVE CRITICAL
 	// --------------
-	printf(" --- exited from critical section\n");
+	printf(" --- Exited from critical section\n");
 
 	periodic_execution = true; // As long as the thread is still sleeping, it is enough to set this to true to keep it alive
 
@@ -163,7 +166,9 @@ void getChallengeParameters() {
 
 	json_value* value = challenge->properties;
 	for (int i = 0; i < value->u.object.length; i++) {
-		if (strcmp(value->u.object.values[i].name, "module_python") == 0) module_python = value->u.object.values[i].value->u.string.ptr;
+		if (strcmp(value->u.object.values[i].name, "module_python") == 0) {
+			module_python = value->u.object.values[i].value->u.string.ptr;
+		}
 
 		if (strcmp(value->u.object.values[i].name, "validity_time") == 0) {
 			validity_time = (int)(value->u.object.values[i].value->u.integer);
@@ -191,39 +196,39 @@ void getChallengeParameters() {
 }
 
 int importModulePython() {
-	
 
+	printf("--- Importing module '%s'...\n", module_python);
 	pName = PyUnicode_DecodeFSDefault(module_python);
 	pModule = PyImport_Import(pName);
 	Py_DECREF(pName);
 	if (pModule == NULL) {
 		PyErr_Print();
-		fprintf(stderr, "--- Dll message: Failed to load python module\n");
+		fprintf(stderr, "--- ERROR: failed to load python module\n");
 		//Py_DECREF(pModule);
 		return 1;
 	}
-	printf("--- Initialized module\n");
+	printf("--- Import OK\n");
 
 
 	pFuncInit = PyObject_GetAttrString(pModule, "init"); // pFunc is a new reference, the attribute(function) execute from module pModule
 	if (!(pFuncInit && PyCallable_Check(pFuncInit))) { //PyCallable_Check check if its a function (its callable)
 		if (PyErr_Occurred())
 			PyErr_Print();
-		fprintf(stderr, "--- Dll message: Cannot find function execute\n");
+		fprintf(stderr, "--- ERROR: cannot find function init()\n");
 		//Py_DECREF(pFuncInit);
 		return 1;
 	}
-	printf("--- Function init is callable\n");
+	printf("--- Function init() is callable\n");
 
 	pFuncExec = PyObject_GetAttrString(pModule, "executeChallenge"); // pFunc is a new reference, the attribute(function) execute from module pModule
 	if (!(pFuncExec && PyCallable_Check(pFuncExec))) { //PyCallable_Check check if its a function (its callable)
 		if (PyErr_Occurred())
 			PyErr_Print();
-		fprintf(stderr, "--- Dll message: Cannot find function executeChallenge\n");
+		fprintf(stderr, "--- ERROR: cannot find function executeChallenge()\n");
 		//Py_DECREF(pFuncExec);
 		return 1;
 	}
-	printf("--- Function executeChallenge is callable\n");
+	printf("--- Function executeChallenge() is callable\n");
 
 
 	return 0;

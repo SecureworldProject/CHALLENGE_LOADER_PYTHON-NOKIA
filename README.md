@@ -2,7 +2,7 @@ this challenge loads and execute a python module
 includes an example "simple_challenge.py"
 
 example json file for testing challenge "simple challenge" developed in python:
-
+```
 {
 
         "FileName": "simple_challenge.dll",
@@ -15,3 +15,4 @@ example json file for testing challenge "simple challenge" developed in python:
         },
 	"Requirements": "none"
 }
+```

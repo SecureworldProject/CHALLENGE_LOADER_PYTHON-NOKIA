@@ -4,15 +4,15 @@ includes an example "simple_challenge.py"
 example json file for testing challenge "simple challenge" developed in python:
 ```
 {
-
-        "FileName": "simple_challenge.dll",
-        "Description": "This is a simple challenge that does nothing.",
-        "Props": {
+	"FileName": "challenge_loader_python.dll",
+	"Description": "Loads a python challenge.",
+	"Props": {
+		"module_python":"simple_challenge",
 		"validity_time": 3600,
-		"refresh_time": 5,
-		"param1": "texto",
+		"refresh_time": 3000,
+		"param1": "Texto",
 		"param2": 3
-        },
+	},
 	"Requirements": "none"
 }
 ```

@@ -136,10 +136,10 @@ int executeChallenge() {
 	// BEGIN CRITICAL
 	// --------------
 	EnterCriticalSection(&(group->subkey->critical_section));
-	printf(" --- Entered in critical section\n");
+	printf("--- Entered in critical section\n");
 	/* TO DO: esto no sabemos si debemos descomentarlo o no. pendiente experimentar
 	if ((group->subkey)->data != NULL) {
-		printf(" --- free memory \n");
+		printf("--- free memory \n");
 		free((group->subkey)->data);
 	}*/
 
@@ -149,7 +149,7 @@ int executeChallenge() {
 	LeaveCriticalSection(&(group->subkey->critical_section));
 	// LEAVE CRITICAL
 	// --------------
-	printf(" --- Exited from critical section\n");
+	printf("--- Exited from critical section\n");
 
 	periodic_execution = true; // As long as the thread is still sleeping, it is enough to set this to true to keep it alive
 

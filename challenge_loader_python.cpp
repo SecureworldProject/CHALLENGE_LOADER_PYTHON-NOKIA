@@ -23,6 +23,7 @@
 char* module_python = NULL;
 PyObject* pDictArgs;
 PyObject* pName, *pModule, *pFuncInit, *pFuncExec;
+CRITICAL_SECTION* py_critical_section = NULL;
 
 
 
@@ -30,40 +31,58 @@ PyObject* pName, *pModule, *pFuncInit, *pFuncExec;
 /////  FUNCTION DEFINITIONS  /////
 void getChallengeParameters();
 int importModulePython();
+extern "C" _declspec(dllexport) void setPyCriticalSection(CRITICAL_SECTION * py_crit_sect);
 
 
 
 
 /////  FUNCTION IMPLEMENTATIONS  /////
 int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challenge_param) {
+	//PyGILState_STATE gstate;
+	EnterCriticalSection(py_critical_section);
+
 	int result = 0;
+	PyObject* pValue;
 
 	// It is mandatory to fill these global variables
 	group = group_param;
 	challenge = challenge_param;
 	if (group == NULL || challenge == NULL) {
 		printf("--- ERROR: group or challenge are NULL\n");
-		return -1;
+		return ERROR_INVALID_PARAMETER;
 	}
 	printf("--- Proceding to initialize challenge '%ws'\n", challenge->file_name);
 
 	// Init python shell
-	Py_Initialize();
+	if (Py_IsInitialized()) {
+		printf("--- Python ALREADY initialized\n");
+	}
+	else {
+		printf("--- Python NOT YET initialized\n");
+		Py_Initialize();
+	}
+	//gstate = PyGILState_Ensure();
+
 
 	// Process challenge parameters
 	getChallengeParameters();
+
+	if (refresh_time == INT_MAX || refresh_time == 0) {
+		setPeriodicExecution(false);
+	}
 
 	// Import the specified python module
 	result = importModulePython();
 	if (result != 0) {
 		if (Py_FinalizeEx() < 0) {
-			return 120;
+			result = -1;
+			goto CH_INIT_LEAVE_CRIT_SECTION;
 		}
-		return result;//DECREF se hace dentro de la funcion import
+		goto CH_INIT_LEAVE_CRIT_SECTION;
 	}
 
 	// Call python challenge init()
-	PyObject *pValue = PyObject_CallOneArg(pFuncInit, pDictArgs);
+	pValue = PyObject_CallOneArg(pFuncInit, pDictArgs);
 
 	// Check the result
 	result = PyLong_Check(pValue);
@@ -71,65 +90,97 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 		Py_XDECREF(pFuncInit);
 		Py_DECREF(pModule);
 		if (Py_FinalizeEx() < 0) {
-			return 120;
+			result = -1;
+			goto CH_INIT_LEAVE_CRIT_SECTION;
 		}
-		return -1;
+		result = -2;
+		goto CH_INIT_LEAVE_CRIT_SECTION;
 	}
 	result = PyLong_AsLong(pValue);
-	
 	if (result != 0) {
 		printf("--- ERROR: result is NOT zero in python challenge init()!\n");
 		Py_XDECREF(pFuncInit);
 		Py_DECREF(pModule);
 		if (Py_FinalizeEx() < 0) {
-			return 120;
+			result = -1;
+			goto CH_INIT_LEAVE_CRIT_SECTION;
 		}
-		return result;
+		result = -3;
+		goto CH_INIT_LEAVE_CRIT_SECTION;
 	}
 	printf("--- Result IS zero in python challenge init(): OK\n");
-	// It is optional to execute the challenge here. As long as this is a wrapper for many python challenges, better not to call it here.
-	// result = executeChallenge(); // You can do it from python init if you want
+	// It is optional to execute the challenge here.
+	// As long as this is a wrapper for many python challenges, better not to call it here.
+	// Note that calling it from python init will not renew the key. That happens in the C part of the executeChallenge() function
+	// result = executeChallenge();
 
 	// It is optional to launch a thread to refresh the key here, but it is recommended
 	if (result == 0) {
 		launchPeriodicExecution();  // This function is located at context_challenge.h
 	}
 
+	CH_INIT_LEAVE_CRIT_SECTION:
+	//PyGILState_Release(gstate);
+	LeaveCriticalSection(py_critical_section);
+	if (result != 0) {
+		printf("--- Python may have been FINALIZED\n");
+	}
+
 	return result;
 }
 
 int executeChallenge() {
-	//TODO leer solo los parameros especificos
+	//PyGILState_STATE gstate;
+	printf("---****** exec pre PyGILState_Ensure()\n");
+	//gstate = PyGILState_Ensure();
+	EnterCriticalSection(py_critical_section);
+	printf("---****** exec post PyGILState_Ensure()\n");
+
+	int result = 0;
+	PyObject* pValue = NULL;
+	PyObject* pValuekey = NULL;
+	PyObject* pValuekeysize = NULL;
+	int size_of_key = 0;
+	byte* key_data = NULL;
 
 	if (group == NULL || challenge == NULL) {
 		printf("--- ERROR: group or challenge are NULL\n");
-		return -1;
+		result = ERROR_INVALID_PARAMETER;
+		goto CH_EXEC_LEAVE_CRIT_SECTION;
 	}
 	printf("--- Execute (%ws with module %s)\n", challenge->file_name, module_python);
+	printf("--- Python %s initialized\n", (Py_IsInitialized()) ? "IS" : "is NOT");
 
-	byte* result;
-
-	PyObject *pValue = PyObject_CallNoArgs(pFuncExec);
-	int res = PyTuple_Check(pValue);
-	if (res == 0) {
+	pValue = PyObject_CallNoArgs(pFuncExec);
+	printf("---****** After PyObject_CallNoArgs()\n");
+	result = PyTuple_Check(pValue);
+	printf("---****** After PyObject_CallNoArgs()\n");
+	if (result == 0) {
 		printf("--- ERROR: result is not a tuple! \n");
-		periodic_execution = false; // This is enough to ensure that the thread dies and does not execute any other time.
-		return -1;
+		setPeriodicExecution(false); // This is enough to ensure that the thread dies and does not execute any other time.
+		result = -2;
+		goto CH_EXEC_LEAVE_CRIT_SECTION;
 	}
-	PyObject *pValuekey = PyTuple_GetItem(pValue, 0);
-	PyObject *pValuekeysize = PyTuple_GetItem(pValue, 1);
+	printf("---****** After if (result == 0)\n");
+	pValuekey = PyTuple_GetItem(pValue, 0);
+	printf("---****** After PyTuple_GetItem(pValue, 0)\n");
+	pValuekeysize = PyTuple_GetItem(pValue, 1);
+	printf("---****** After PyTuple_GetItem(pValue, 1)\n");
 
 	//TO DO: robustecer esto para que la tupla sepamos que mide 2 y que sus tipos estan bien
 
-	int size_of_key = (int) PyLong_AsLong(pValuekeysize);
+	size_of_key = (int) PyLong_AsLong(pValuekeysize);
+	printf("---****** After PyLong_AsLong()\n");
 	if (size_of_key == 0) {
 		// This indicates that the challenge could not execute correctly
 		printf("--- ERROR: size_of_key is 0. It was NOT possible to execute the challenge '%s'\n", module_python);
 		printf("--- Stopping thread %s. Securemirror will automatically try to launch next equivalent challenge\n", module_python);
-		periodic_execution = false; // This is enough to ensure that the thread dies and does not execute any other time.
-		return - 1; // This -1 is not processed unless it is directly invocated from securemirror (which happens only when the key expired)
+		setPeriodicExecution(false); // This is enough to ensure that the thread dies and does not execute any other time.
+		result = -3;
+		goto CH_EXEC_LEAVE_CRIT_SECTION;
 	}
-	byte* key_data = (byte*)PyBytes_AsString(pValuekey);
+	printf("---****** After if (size_of_key == 0)\n");
+	key_data = (byte*)PyBytes_AsString(pValuekey);
 	printf("--- After execute: key_data[0] = %d\n", key_data[0]);
 
 
@@ -151,8 +202,11 @@ int executeChallenge() {
 	// --------------
 	printf("--- Exited from critical section\n");
 
-	periodic_execution = true; // As long as the thread is still sleeping, it is enough to set this to true to keep it alive
+	setPeriodicExecution(true); // As long as the thread is still sleeping, it is enough to set this to true to keep it alive
 
+	CH_EXEC_LEAVE_CRIT_SECTION:
+	//PyGILState_Release(gstate);
+	LeaveCriticalSection(py_critical_section);
 	return 0;   // Always 0 means OK.
 
 }
@@ -196,8 +250,8 @@ void getChallengeParameters() {
 }
 
 int importModulePython() {
-
 	printf("--- Importing module '%s'...\n", module_python);
+
 	pName = PyUnicode_DecodeFSDefault(module_python);
 	pModule = PyImport_Import(pName);
 	Py_DECREF(pName);
@@ -205,10 +259,9 @@ int importModulePython() {
 		PyErr_Print();
 		fprintf(stderr, "--- ERROR: failed to load python module\n");
 		//Py_DECREF(pModule);
-		return 1;
+		return ERROR_FILE_NOT_FOUND;
 	}
 	printf("--- Import OK\n");
-
 
 	pFuncInit = PyObject_GetAttrString(pModule, "init"); // pFunc is a new reference, the attribute(function) execute from module pModule
 	if (!(pFuncInit && PyCallable_Check(pFuncInit))) { //PyCallable_Check check if its a function (its callable)
@@ -216,7 +269,7 @@ int importModulePython() {
 			PyErr_Print();
 		fprintf(stderr, "--- ERROR: cannot find function init()\n");
 		//Py_DECREF(pFuncInit);
-		return 1;
+		return ERROR_FUNCTION_NOT_CALLED;
 	}
 	printf("--- Function init() is callable\n");
 
@@ -226,10 +279,13 @@ int importModulePython() {
 			PyErr_Print();
 		fprintf(stderr, "--- ERROR: cannot find function executeChallenge()\n");
 		//Py_DECREF(pFuncExec);
-		return 1;
+		return ERROR_FUNCTION_NOT_CALLED;
 	}
 	printf("--- Function executeChallenge() is callable\n");
 
-
 	return 0;
+}
+
+void setPyCriticalSection(CRITICAL_SECTION* py_crit_sect) {
+	py_critical_section = py_crit_sect;
 }

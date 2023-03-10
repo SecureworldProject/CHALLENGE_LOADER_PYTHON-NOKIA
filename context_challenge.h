@@ -60,12 +60,12 @@ struct KeyData {
 
 
 void setPeriodicExecution(bool active_param) {
-	printf("--- periodic exec: %d \n", active_param);
+	printf("--- Setting periodic_execution: %s \n", active_param ? "true" : "false");
 	periodic_execution = active_param;
 }
 
 void launchPeriodicExecution() {
-	if (periodic_execution) {
+	if (periodic_execution && h_thread==NULL) {
 		h_thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)refreshSubkey, NULL, 0, NULL);
 	}
 }
@@ -74,10 +74,11 @@ void refreshSubkey(LPVOID th_param) {
 	Sleep(refresh_time*1000);
 	
 	while (periodic_execution) {
-		printf("--- periodic challenge execution for key refreshing\n");
+		printf("--- Periodic challenge execution for key refreshing...\n");
 		executeChallenge();
 		Sleep(refresh_time*1000);      // Sleep first due to execute function already launched by init()
 	}
+	h_thread = NULL;
 	return;
 }
 

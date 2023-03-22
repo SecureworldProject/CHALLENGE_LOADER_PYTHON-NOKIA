@@ -65,7 +65,7 @@ void setPeriodicExecution(bool active_param) {
 }
 
 void launchPeriodicExecution() {
-	if (periodic_execution && h_thread==NULL) {
+	if (periodic_execution && h_thread== INVALID_HANDLE_VALUE) {
 		h_thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)refreshSubkey, NULL, 0, NULL);
 	}
 }
@@ -78,7 +78,7 @@ void refreshSubkey(LPVOID th_param) {
 		executeChallenge();
 		Sleep(refresh_time*1000);      // Sleep first due to execute function already launched by init()
 	}
-	h_thread = NULL;
+	h_thread = INVALID_HANDLE_VALUE;
 	return;
 }
 

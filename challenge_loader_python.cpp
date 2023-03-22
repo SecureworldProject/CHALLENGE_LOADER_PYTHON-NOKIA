@@ -49,6 +49,10 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	}
 
 	printf("--- Proceding to initialize challenge '%ws'\n", challenge_param->file_name);
+	if (py_critical_section == NULL) {
+		fprintf(stderr, "--- Python critical section has not been initialized. Call setPyCriticalSection() with a valid pointer to a critical section before using any Python challenge.\n");
+		return ERROR_INVALID_DATA;
+	}
 	EnterCriticalSection(py_critical_section);
 
 	// It is mandatory to fill these global variables
@@ -63,6 +67,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 
 	// Do not activate periodic execution in these specific cases
 	if (refresh_time == INT_MAX || refresh_time == 0) {
+		printf("--- The value of refresh_time (%d) indicates that periodic execution thread must not be launched\n", refresh_time);
 		setPeriodicExecution(false);
 	}
 
@@ -96,7 +101,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	// result = executeChallenge();
 
 	// It is optional to launch a thread to refresh the key here, but it is recommended
-	if (result == 0 && h_thread == NULL) {
+	if (result == 0 && h_thread == INVALID_HANDLE_VALUE) {
 		launchPeriodicExecution();  // This function is located at context_challenge.h
 	}
 
@@ -124,13 +129,13 @@ int executeChallenge() {
 	byte* key_data_tmp = NULL;
 	byte* key_data = NULL;
 
+	EnterCriticalSection(py_critical_section);
 	if (group == NULL || challenge == NULL) {
 		fprintf(stderr, "--- ERROR: group or challenge are NULL in challenge_loader_python executeChallenge()\n");
 		result = ERROR_INVALID_PARAMETER;
 		goto CH_EXEC_LEAVE_CRIT_SECTION;
 	}
 	printf("--- Proceding to execute challenge '%ws' (with module '%s')\n", challenge->file_name, module_python);
-	EnterCriticalSection(py_critical_section);
 
 	pValue = PyObject_CallNoArgs(pFuncExec);
 	result = PyTuple_Check(pValue);
@@ -171,8 +176,9 @@ int executeChallenge() {
 	printf("\n");
 
 
-	printf("--- Entering in key critical section\n");
-	EnterCriticalSection(&(group->subkey->critical_section));
+	//printf("--- Entering in key critical section\n");
+	//EnterCriticalSection(&(group->subkey->critical_section));
+	//printf("--- Entered in key critical section\n");
 	if ((group->subkey)->data != NULL) {
 		printf("--- Freeing old key data from (group->subkey)->data \n");
 		free((group->subkey)->data);
@@ -180,8 +186,8 @@ int executeChallenge() {
 	group->subkey->data = key_data;
 	group->subkey->expires = time(NULL) + validity_time;
 	group->subkey->size = size_of_key;
-	LeaveCriticalSection(&(group->subkey->critical_section));
-	printf("--- Exited from key critical section\n");
+	//LeaveCriticalSection(&(group->subkey->critical_section));
+	//printf("--- Exited from key critical section\n");
 
 
 	setPeriodicExecution(true); // As long as the thread is still sleeping, it is enough to set this to true to keep it alive

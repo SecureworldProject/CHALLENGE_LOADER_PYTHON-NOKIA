@@ -25,7 +25,6 @@ PyObject* pDictArgs = NULL;
 PyObject* pModule = NULL;
 PyObject* pFuncInit = NULL;
 PyObject* pFuncExec = NULL;
-CRITICAL_SECTION* py_critical_section = NULL;
 
 
 
@@ -33,7 +32,6 @@ CRITICAL_SECTION* py_critical_section = NULL;
 /////  FUNCTION DEFINITIONS  /////
 void getChallengeParameters();
 int importModulePython();
-extern "C" _declspec(dllexport) void setPyCriticalSection(CRITICAL_SECTION * py_crit_sect);
 
 
 
@@ -49,11 +47,6 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	}
 
 	printf("--- Proceding to initialize challenge '%ws'\n", challenge_param->file_name);
-	if (py_critical_section == NULL) {
-		fprintf(stderr, "--- Python critical section has not been initialized. Call setPyCriticalSection() with a valid pointer to a critical section before using any Python challenge.\n");
-		return ERROR_INVALID_DATA;
-	}
-	EnterCriticalSection(py_critical_section);
 
 	// It is mandatory to fill these global variables
 	group = group_param;
@@ -75,7 +68,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	result = importModulePython();
 	if (result != 0) {
 		fprintf(stderr, "--- ERROR: could not import module or access one of its functions\n");
-		goto CH_INIT_LEAVE_CRIT_SECTION;
+		goto CH_INIT_CLEANUP;
 	}
 
 	// Call python challenge init()
@@ -86,13 +79,13 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 	if (result == 0) {
 		fprintf(stderr, "--- ERROR: python challenge init() did not return a valid (long type) value\n");
 		result = -1;
-		goto CH_INIT_LEAVE_CRIT_SECTION;
+		goto CH_INIT_CLEANUP;
 	}
 	result = PyLong_AsLong(pValue);
 	if (result != 0) {
 		fprintf(stderr, "--- ERROR: python challenge init() did not return zero\n");
 		result = -2;
-		goto CH_INIT_LEAVE_CRIT_SECTION;
+		goto CH_INIT_CLEANUP;
 	}
 	printf("--- Python challenge init() returned zero: OK\n");
 	// It is optional to execute the challenge here.
@@ -105,7 +98,7 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 		launchPeriodicExecution();  // This function is located at context_challenge.h
 	}
 
-	CH_INIT_LEAVE_CRIT_SECTION:
+	CH_INIT_CLEANUP:
 	if (result != 0) {
 		printf("--- Stopping thread associated to %s.py. Securemirror will automatically try to launch next equivalent challenge in the group\n", module_python);
 		setPeriodicExecution(false);
@@ -115,7 +108,6 @@ int init(struct ChallengeEquivalenceGroup* group_param, struct Challenge* challe
 		Py_XDECREF(pFuncInit);
 		Py_XDECREF(pFuncExec);
 	}
-	LeaveCriticalSection(py_critical_section);
 
 	return result;
 }
@@ -129,11 +121,10 @@ int executeChallenge() {
 	byte* key_data_tmp = NULL;
 	byte* key_data = NULL;
 
-	EnterCriticalSection(py_critical_section);
 	if (group == NULL || challenge == NULL) {
 		fprintf(stderr, "--- ERROR: group or challenge are NULL in challenge_loader_python executeChallenge()\n");
 		result = ERROR_INVALID_PARAMETER;
-		goto CH_EXEC_LEAVE_CRIT_SECTION;
+		goto CH_EXEC_CLEANUP;
 	}
 	printf("--- Proceding to execute challenge '%ws' (with module '%s')\n", challenge->file_name, module_python);
 
@@ -143,7 +134,7 @@ int executeChallenge() {
 		fprintf(stderr, "--- ERROR: python challenge executeChallenge() did not return a valid value (result is not a tuple)\n");
 		setPeriodicExecution(false);    // This is enough to ensure that the thread dies and does not execute any other time.
 		result = -2;
-		goto CH_EXEC_LEAVE_CRIT_SECTION;
+		goto CH_EXEC_CLEANUP;
 	}
 	pValueKey = PyTuple_GetItem(pValue, 0);
 	pValueKeySize = PyTuple_GetItem(pValue, 1);
@@ -155,7 +146,7 @@ int executeChallenge() {
 		fprintf(stderr, "--- ERROR: python challenge executeChallenge() did not return a valid value (size_of_key is 0)\n");
 		setPeriodicExecution(false);    // This is enough to ensure that the thread dies and does not execute any other time.
 		result = -3;
-		goto CH_EXEC_LEAVE_CRIT_SECTION;
+		goto CH_EXEC_CLEANUP;
 	}
 
 	printf("--- size_of_key is %d\n", size_of_key);
@@ -166,7 +157,7 @@ int executeChallenge() {
 	if (key_data == NULL) {
 		fprintf(stderr, "--- ERROR: not enough memory\n");
 		result = ERROR_NOT_ENOUGH_MEMORY;
-		goto CH_EXEC_LEAVE_CRIT_SECTION;
+		goto CH_EXEC_CLEANUP;
 	}
 	memcpy_s(key_data, size_of_key, key_data_tmp, size_of_key);
 	printf("--- After execute: size_of_key = %d, key_data = ", size_of_key);
@@ -176,9 +167,9 @@ int executeChallenge() {
 	printf("\n");
 
 
-	//printf("--- Entering in key critical section\n");
-	//EnterCriticalSection(&(group->subkey->critical_section));
-	//printf("--- Entered in key critical section\n");
+	printf("--- Entering in key critical section\n");
+	EnterCriticalSection(&(group->subkey->critical_section));
+	printf("--- Entered in key critical section\n");
 	if ((group->subkey)->data != NULL) {
 		printf("--- Freeing old key data from (group->subkey)->data \n");
 		free((group->subkey)->data);
@@ -186,16 +177,15 @@ int executeChallenge() {
 	group->subkey->data = key_data;
 	group->subkey->expires = time(NULL) + validity_time;
 	group->subkey->size = size_of_key;
-	//LeaveCriticalSection(&(group->subkey->critical_section));
-	//printf("--- Exited from key critical section\n");
+	LeaveCriticalSection(&(group->subkey->critical_section));
+	printf("--- Exited from key critical section\n");
 
 
 	setPeriodicExecution(true); // As long as the thread is still sleeping, it is enough to set this to true to keep it alive
 
 	result = 0;
 
-	CH_EXEC_LEAVE_CRIT_SECTION:
-	LeaveCriticalSection(py_critical_section);
+	CH_EXEC_CLEANUP:
 	if (result != 0) {
 		printf("--- Stopping thread associated to %s.py. Securemirror will automatically try to launch next equivalent challenge in the group\n", module_python);
 		setPeriodicExecution(false);
@@ -284,8 +274,4 @@ int importModulePython() {
 	printf("--- Function executeChallenge() is callable\n");
 
 	return 0;
-}
-
-void setPyCriticalSection(CRITICAL_SECTION* py_crit_sect) {
-	py_critical_section = py_crit_sect;
 }
